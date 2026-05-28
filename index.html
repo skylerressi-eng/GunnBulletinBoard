@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gunn Bulletin Board</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&family=Permanent+Marker&family=Shadows+Into+Light&family=Special+Elite&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>📌 Gunn Bulletin Board</h1>
+    <div class="controls">
+      <button id="view-toggle" class="btn">Board view</button>
+      <span id="counter" class="counter">0 notes</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="composer">
+      <h2>Post a new note</h2>
+      <form id="note-form">
+        <textarea id="note-text" placeholder="What's on your mind?" maxlength="280" required></textarea>
+        <div class="form-row">
+          <input id="note-name" type="text" placeholder="Your name" maxlength="40" required />
+          <div class="color-picker" id="color-picker"></div>
+          <button type="submit" class="btn primary">Pin it up</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="board" id="board">
+      <div class="stack" id="stack">
+        <div class="empty-msg" id="empty-msg">No notes yet — be the first to post!</div>
+      </div>
+    </section>
+
+    <p class="hint" id="hint">Tip: click the top note to peel it off and see what's underneath. Peeled notes go back to the bottom of the stack.</p>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
