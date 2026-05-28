@@ -1,14 +1,30 @@
 (function () {
   'use strict';
 
-  // ============ STORAGE KEYS ============
-  const K_USERS    = 'gbb-users-v2';
-  const K_SESSION  = 'gbb-session-v2';
-  const K_BOARDS   = 'gbb-boards-v2';
-  const K_NOTES    = (boardId) => 'gbb-notes-v2-' + boardId;
-  const K_LAST     = 'gbb-last-board-v2';
+  // ============ CONFIG / API ============
+  const TOKEN_KEY = 'gbb-token';
+  const LAST_BOARD_KEY = 'gbb-last-board';
 
   const COLORS = ['#fff176', '#ff9aa2', '#a0e7a0', '#9ad0f5', '#d6b3ff', '#ffb870', '#f5f5f5'];
+
+  async function api(method, path, body) {
+    const headers = { 'Content-Type': 'application/json' };
+    const t = localStorage.getItem(TOKEN_KEY);
+    if (t) headers.Authorization = 'Bearer ' + t;
+    const res = await fetch('/api' + path, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined
+    });
+    let data = null;
+    try { data = await res.json(); } catch { /* no body */ }
+    if (!res.ok) {
+      const err = new Error((data && data.error) || 'request_failed');
+      err.status = res.status;
+      throw err;
+    }
+    return data;
+  }
 
   // ============ DOM ============
   const authScreen  = document.getElementById('auth-screen');
@@ -43,37 +59,36 @@
 
   // ============ STATE ============
   let selectedColor = COLORS[0];
-  let currentUser   = null;     // { username, displayName }
+  let currentUser   = null;
+  let boards        = [];
   let currentBoardId = null;
+  let notes         = [];
 
   // ============ UTIL ============
-  function readJSON(key, fallback) {
-    try {
-      const raw = localStorage.getItem(key);
-      if (!raw) return fallback;
-      return JSON.parse(raw);
-    } catch { return fallback; }
-  }
-  function writeJSON(key, val) { localStorage.setItem(key, JSON.stringify(val)); }
   function randInt(a, b) { return Math.floor(Math.random() * (b - a + 1)) + a; }
-  function uid(prefix) { return prefix + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,7); }
-
-  async function hashPassword(pass, salt) {
-    const data = new TextEncoder().encode(salt + ':' + pass);
-    const buf = await crypto.subtle.digest('SHA-256', data);
-    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
-  }
-
+  function randomPosition() { return { x: randInt(12, 88), y: randInt(15, 85) }; }
   function formatDate(ts) {
     const d = new Date(ts);
     return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) +
       ' • ' + d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
   }
+  function friendlyError(code) {
+    const map = {
+      bad_username: 'Username must be 2-24 chars: letters, numbers, underscore.',
+      bad_password: 'Password must be at least 4 characters.',
+      bad_display_name: 'Display name is required.',
+      username_taken: 'That username is already taken.',
+      invalid_credentials: 'Wrong username or password.',
+      not_authenticated: 'Please log in again.',
+      last_board: 'You need at least one board.',
+      forbidden: 'You can only modify your own content.',
+      bad_text: 'Note text is required (max 280 chars).',
+      bad_name: 'Board name is required.'
+    };
+    return map[code] || ('Something went wrong (' + code + ').');
+  }
 
   // ============ AUTH ============
-  function getUsers() { return readJSON(K_USERS, {}); }
-  function saveUsers(u) { writeJSON(K_USERS, u); }
-
   document.querySelectorAll('.tab').forEach(tab => {
     tab.addEventListener('click', () => {
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -90,77 +105,47 @@
     e.preventDefault();
     signupErr.textContent = '';
     const username = document.getElementById('signup-user').value.trim().toLowerCase();
-    const display  = document.getElementById('signup-display').value.trim();
-    const pass     = document.getElementById('signup-pass').value;
-
-    if (!/^[a-z0-9_]{2,24}$/.test(username)) {
-      signupErr.textContent = 'Username: 2-24 chars, letters/numbers/underscore only.';
-      return;
+    const displayName = document.getElementById('signup-display').value.trim();
+    const password = document.getElementById('signup-pass').value;
+    try {
+      const { token, user } = await api('POST', '/signup', { username, displayName, password });
+      localStorage.setItem(TOKEN_KEY, token);
+      currentUser = user;
+      await enterApp();
+    } catch (err) {
+      signupErr.textContent = friendlyError(err.message);
     }
-    const users = getUsers();
-    if (users[username]) {
-      signupErr.textContent = 'That username is taken.';
-      return;
-    }
-    const salt = uid('s');
-    const hash = await hashPassword(pass, salt);
-    users[username] = { username, displayName: display, salt, hash, createdAt: Date.now() };
-    saveUsers(users);
-    setSession(username);
-    enterApp();
   });
 
   loginForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     loginErr.textContent = '';
     const username = document.getElementById('login-user').value.trim().toLowerCase();
-    const pass     = document.getElementById('login-pass').value;
-    const users = getUsers();
-    const u = users[username];
-    if (!u) { loginErr.textContent = 'No such user.'; return; }
-    const hash = await hashPassword(pass, u.salt);
-    if (hash !== u.hash) { loginErr.textContent = 'Wrong password.'; return; }
-    setSession(username);
-    enterApp();
+    const password = document.getElementById('login-pass').value;
+    try {
+      const { token, user } = await api('POST', '/login', { username, password });
+      localStorage.setItem(TOKEN_KEY, token);
+      currentUser = user;
+      await enterApp();
+    } catch (err) {
+      loginErr.textContent = friendlyError(err.message);
+    }
   });
 
-  function setSession(username) { writeJSON(K_SESSION, { username }); }
-  function clearSession() { localStorage.removeItem(K_SESSION); }
-
-  function loadSession() {
-    const s = readJSON(K_SESSION, null);
-    if (!s || !s.username) return null;
-    const users = getUsers();
-    return users[s.username] || null;
-  }
-
-  logoutBtn.addEventListener('click', () => {
-    clearSession();
+  logoutBtn.addEventListener('click', async () => {
+    try { await api('POST', '/logout'); } catch {}
+    localStorage.removeItem(TOKEN_KEY);
     location.reload();
   });
 
   // ============ BOARDS ============
-  function getBoards() { return readJSON(K_BOARDS, []); }
-  function saveBoards(b) { writeJSON(K_BOARDS, b); }
-
-  function ensureDefaultBoard() {
-    const boards = getBoards();
-    if (boards.length === 0) {
-      const id = uid('b');
-      boards.push({
-        id,
-        name: 'General',
-        description: 'The main board — start posting!',
-        theme: 'cork',
-        ownerId: currentUser.username,
-        createdAt: Date.now()
-      });
-      saveBoards(boards);
-    }
+  async function loadBoards() {
+    const data = await api('GET', '/boards');
+    boards = data.boards;
+    renderBoardList();
   }
 
   function renderBoardList() {
-    const boards = getBoards();
     boardListEl.innerHTML = '';
     boards.forEach(b => {
       const li = document.createElement('li');
@@ -172,8 +157,8 @@
 
       const meta = document.createElement('div');
       meta.className = 'board-meta';
-      const noteCount = readJSON(K_NOTES(b.id), []).length;
-      meta.textContent = noteCount + (noteCount === 1 ? ' note' : ' notes') + ' • ' + b.theme;
+      const count = b.note_count || 0;
+      meta.textContent = count + (count === 1 ? ' note' : ' notes') + ' • ' + b.theme;
 
       li.appendChild(name);
       li.appendChild(meta);
@@ -182,20 +167,17 @@
     });
   }
 
-  function switchBoard(boardId) {
-    currentBoardId = boardId;
-    localStorage.setItem(K_LAST, boardId);
-    const board = getBoards().find(b => b.id === boardId);
+  async function switchBoard(boardId) {
+    const board = boards.find(b => b.id === boardId);
     if (!board) return;
+    currentBoardId = boardId;
+    localStorage.setItem(LAST_BOARD_KEY, boardId);
     boardNameEl.textContent = board.name;
     boardDescEl.textContent = board.description || '';
-
-    // theme class
     boardEl.classList.remove('theme-cork', 'theme-chalk', 'theme-paper', 'theme-midnight');
     boardEl.classList.add('theme-' + (board.theme || 'cork'));
-
     renderBoardList();
-    renderNotes();
+    await loadNotes();
   }
 
   newBoardBtn.addEventListener('click', () => {
@@ -211,66 +193,68 @@
     if (e.target === modalBackdrop) modalBackdrop.classList.add('hidden');
   });
 
-  newBoardForm.addEventListener('submit', (e) => {
+  newBoardForm.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const boards = getBoards();
-    const id = uid('b');
-    boards.push({
-      id,
-      name: boardNameInp.value.trim(),
-      description: boardDescInp.value.trim(),
-      theme: boardThemeInp.value,
-      ownerId: currentUser.username,
-      createdAt: Date.now()
-    });
-    saveBoards(boards);
-    modalBackdrop.classList.add('hidden');
-    switchBoard(id);
+    try {
+      const { board } = await api('POST', '/boards', {
+        name: boardNameInp.value.trim(),
+        description: boardDescInp.value.trim(),
+        theme: boardThemeInp.value
+      });
+      modalBackdrop.classList.add('hidden');
+      boards.push(board);
+      await switchBoard(board.id);
+    } catch (err) {
+      alert(friendlyError(err.message));
+    }
   });
 
-  deleteBoardBtn.addEventListener('click', () => {
-    const boards = getBoards();
-    if (boards.length <= 1) {
-      alert("You need at least one board. Create another before deleting this one.");
-      return;
-    }
+  deleteBoardBtn.addEventListener('click', async () => {
     const board = boards.find(b => b.id === currentBoardId);
     if (!board) return;
+    if (board.owner !== currentUser.username) {
+      alert('Only the board owner can delete it.');
+      return;
+    }
+    if (boards.length <= 1) {
+      alert('You need at least one board.');
+      return;
+    }
     if (!confirm('Delete board "' + board.name + '" and all its notes? This cannot be undone.')) return;
-    const remaining = boards.filter(b => b.id !== currentBoardId);
-    saveBoards(remaining);
-    localStorage.removeItem(K_NOTES(currentBoardId));
-    switchBoard(remaining[0].id);
+    try {
+      await api('DELETE', '/boards/' + encodeURIComponent(board.id));
+      await loadBoards();
+      const next = boards[0];
+      if (next) await switchBoard(next.id);
+    } catch (err) {
+      alert(friendlyError(err.message));
+    }
   });
 
   // ============ NOTES ============
-  function getNotes() { return readJSON(K_NOTES(currentBoardId), []); }
-  function saveNotes(n) { writeJSON(K_NOTES(currentBoardId), n); }
-
-  // Spread positions across the visible board area, avoiding edges
-  function randomPosition() {
-    return { x: randInt(12, 88), y: randInt(15, 85) };
+  async function loadNotes() {
+    const data = await api('GET', '/boards/' + encodeURIComponent(currentBoardId) + '/notes');
+    notes = data.notes;
+    renderNotes();
+    // refresh sidebar counts
+    const target = boards.find(b => b.id === currentBoardId);
+    if (target) target.note_count = notes.length;
+    renderBoardList();
   }
 
   function renderNotes(animateNewestId = null) {
-    const notes = getNotes();
-
-    // remove existing note elements
     boardEl.querySelectorAll('.note').forEach(n => n.remove());
-
     counterEl.textContent = notes.length + (notes.length === 1 ? ' note' : ' notes');
     emptyMsg.style.display = notes.length === 0 ? '' : 'none';
 
-    // Render oldest to newest so newest paint on top (later DOM = higher in stack with same z-index)
-    // But explicit z-index by createdAt order makes click-to-front cleaner.
-    notes.forEach((n, i) => {
+    notes.forEach((n) => {
       const el = document.createElement('div');
       el.className = 'note';
       el.style.background = n.color;
       el.style.setProperty('--rot', n.rot + 'deg');
       el.style.setProperty('--x', n.x + '%');
       el.style.setProperty('--y', n.y + '%');
-      el.style.zIndex = String(100 + (n.z || i));
+      el.style.zIndex = String(100 + n.z);
       el.dataset.id = n.id;
 
       const txt = document.createElement('div');
@@ -281,34 +265,35 @@
       meta.className = 'meta';
       const author = document.createElement('span');
       author.className = 'author';
-      author.textContent = n.author;
+      author.textContent = n.author_display;
       const date = document.createElement('span');
       date.className = 'date';
-      date.textContent = formatDate(n.ts);
+      date.textContent = formatDate(n.created_at);
       meta.appendChild(author);
       meta.appendChild(date);
 
       el.appendChild(txt);
       el.appendChild(meta);
 
-      // delete button — only the note's author can delete
-      if (currentUser && n.authorId === currentUser.username) {
+      if (currentUser && n.author === currentUser.username) {
         const del = document.createElement('button');
         del.className = 'delete-btn';
         del.textContent = '✕';
         del.title = 'Delete this note';
-        del.addEventListener('click', (ev) => {
+        del.addEventListener('click', async (ev) => {
           ev.stopPropagation();
           if (!confirm('Delete this note?')) return;
-          const all = getNotes().filter(x => x.id !== n.id);
-          saveNotes(all);
-          renderNotes();
-          renderBoardList();
+          try {
+            await api('DELETE', '/notes/' + encodeURIComponent(n.id));
+            notes = notes.filter(x => x.id !== n.id);
+            renderNotes();
+          } catch (err) {
+            alert(friendlyError(err.message));
+          }
         });
         el.appendChild(del);
       }
 
-      // click: bring to front
       el.addEventListener('click', () => bringToFront(n.id));
 
       if (animateNewestId && n.id === animateNewestId) {
@@ -319,16 +304,17 @@
     });
   }
 
-  function bringToFront(noteId) {
-    const notes = getNotes();
-    const maxZ = notes.reduce((m, x) => Math.max(m, x.z || 0), 0);
+  async function bringToFront(noteId) {
     const target = notes.find(x => x.id === noteId);
     if (!target) return;
-    target.z = maxZ + 1;
-    saveNotes(notes);
-    // just update z-index of the affected element rather than re-render
-    const el = boardEl.querySelector('.note[data-id="' + CSS.escape(noteId) + '"]');
-    if (el) el.style.zIndex = String(100 + target.z);
+    try {
+      const { z } = await api('PATCH', '/notes/' + encodeURIComponent(noteId) + '/front');
+      target.z = z;
+      const el = boardEl.querySelector('.note[data-id="' + CSS.escape(noteId) + '"]');
+      if (el) el.style.zIndex = String(100 + z);
+    } catch (err) {
+      // ignore
+    }
   }
 
   // ============ COLOR PICKER ============
@@ -345,61 +331,66 @@
   });
 
   // ============ POST NOTE ============
-  noteForm.addEventListener('submit', (e) => {
+  noteForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const text = noteText.value.trim();
     if (!text || !currentBoardId) return;
-
-    const notes = getNotes();
-    const maxZ = notes.reduce((m, x) => Math.max(m, x.z || 0), 0);
     const pos = randomPosition();
-    const note = {
-      id: uid('n'),
-      text,
-      author: currentUser.displayName || currentUser.username,
-      authorId: currentUser.username,
-      color: selectedColor,
-      rot: randInt(-8, 8),
-      ts: Date.now(),
-      x: pos.x,
-      y: pos.y,
-      z: maxZ + 1
-    };
-    notes.push(note);
-    saveNotes(notes);
-    noteText.value = '';
-    renderNotes(note.id);
-    renderBoardList();
+    const rot = randInt(-8, 8);
+    try {
+      const { note } = await api('POST', '/boards/' + encodeURIComponent(currentBoardId) + '/notes', {
+        text, color: selectedColor, rot, x: pos.x, y: pos.y
+      });
+      notes.push(note);
+      noteText.value = '';
+      renderNotes(note.id);
+      const target = boards.find(b => b.id === currentBoardId);
+      if (target) target.note_count = notes.length;
+      renderBoardList();
+    } catch (err) {
+      alert(friendlyError(err.message));
+    }
   });
 
+  // Shuffle locally re-randomizes positions in the UI only; positions
+  // belong to whoever placed the note, so we don't persist a global shuffle.
   shuffleBtn.addEventListener('click', () => {
-    const notes = getNotes();
     notes.forEach(n => {
       const p = randomPosition();
       n.x = p.x;
       n.y = p.y;
       n.rot = randInt(-8, 8);
     });
-    saveNotes(notes);
     renderNotes();
   });
 
   // ============ BOOTSTRAP ============
-  function enterApp() {
-    currentUser = loadSession();
-    if (!currentUser) return;
+  async function enterApp() {
     authScreen.classList.add('hidden');
     appShell.classList.remove('hidden');
     userDisplay.textContent = currentUser.displayName || currentUser.username;
-    ensureDefaultBoard();
-    const lastId = localStorage.getItem(K_LAST);
-    const boards = getBoards();
+    await loadBoards();
+    if (boards.length === 0) {
+      // shouldn't happen — server seeds one on signup — but guard anyway
+      const { board } = await api('POST', '/boards', { name: 'General', description: '', theme: 'cork' });
+      boards.push(board);
+      renderBoardList();
+    }
+    const lastId = localStorage.getItem(LAST_BOARD_KEY);
     const start = boards.find(b => b.id === lastId) || boards[0];
-    switchBoard(start.id);
+    await switchBoard(start.id);
   }
 
-  // auto-enter if already logged in
-  if (loadSession()) {
-    enterApp();
+  async function autoLogin() {
+    if (!localStorage.getItem(TOKEN_KEY)) return;
+    try {
+      const { user } = await api('GET', '/me');
+      currentUser = user;
+      await enterApp();
+    } catch {
+      localStorage.removeItem(TOKEN_KEY);
+    }
   }
+
+  autoLogin();
 })();

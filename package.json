@@ -1,0 +1,19 @@
+{
+  "name": "gunn-bulletin-board",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sticky-note bulletin board with accounts and multiple boards.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^11.3.0",
+    "express": "^4.19.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
